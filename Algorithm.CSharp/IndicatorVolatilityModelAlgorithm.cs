@@ -15,7 +15,6 @@
 
 using System;
 using System.Collections.Generic;
-
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Indicators;
@@ -26,21 +25,19 @@ using QuantConnect.Securities.Volatility;
 namespace QuantConnect.Algorithm.CSharp
 {
     /// <summary>
-    /// Algorithm illustrating the usage of the <see cref="IndicatorVolatilityModel"/> and
-    /// how to handle splits and dividends to avoid price discontinuities
+    /// Demonstrates the usage of the <see cref="IndicatorVolatilityModel"/>.
+    /// The algorithm uses a custom indicator (StandardDeviation over SMA)
+    /// as a volatility estimator, while correctly handling corporate actions
+    /// such as splits and dividends to avoid price discontinuities.
     /// </summary>
     public class IndicatorVolatilityModelAlgorithm : QCAlgorithm, IRegressionAlgorithmDefinition
     {
-        private const int _indicatorPeriods = 7;
-
-        private const DataNormalizationMode _dataNormalizationMode = DataNormalizationMode.Raw;
+        private const int Period = 7;
+        private const DataNormalizationMode Mode = DataNormalizationMode.Raw;
 
         private Symbol _aapl;
-
         private IIndicator _indicator;
-
         private int _splitsAndDividendsCount;
-
         private bool _volatilityChecked;
 
         public override void Initialize()
@@ -49,12 +46,14 @@ namespace QuantConnect.Algorithm.CSharp
             SetEndDate(2014, 12, 31);
             SetCash(100000);
 
-            var equity = AddEquity("AAPL", Resolution.Daily, dataNormalizationMode: _dataNormalizationMode);
+            var equity = AddEquity("AAPL", Resolution.Daily, dataNormalizationMode: Mode);
             _aapl = equity.Symbol;
 
-            var std = new StandardDeviation(_indicatorPeriods);
-            var mean = new SimpleMovingAverage(_indicatorPeriods);
+            var std = new StandardDeviation(Period);
+            var mean = new SimpleMovingAverage(Period);
             _indicator = std.Over(mean);
+
+            // Attach custom volatility model
             equity.SetVolatilityModel(new IndicatorVolatilityModel(_indicator, (_, data, _) =>
             {
                 if (data.Price > 0)
@@ -71,84 +70,54 @@ namespace QuantConnect.Algorithm.CSharp
             {
                 _splitsAndDividendsCount++;
 
-                // On a split or dividend event, we need to reset and warm the indicator up as Lean does to BaseVolatilityModel's
-                // to avoid big jumps in volatility due to price discontinuities
+                // Reset and warm up indicator to prevent false spikes in volatility
                 _indicator.Reset();
                 var equity = Securities[_aapl];
-                var volatilityModel = equity.VolatilityModel as IndicatorVolatilityModel;
-                volatilityModel.WarmUp(this, equity, equity.Resolution, _indicatorPeriods, _dataNormalizationMode);
+                var volModel = equity.VolatilityModel as IndicatorVolatilityModel;
+                volModel.WarmUp(this, equity, equity.Resolution, Period, Mode);
             }
         }
 
         public override void OnEndOfDay(Symbol symbol)
         {
             if (symbol != _aapl || !_indicator.IsReady)
-            {
                 return;
-            }
 
             _volatilityChecked = true;
 
-            // This is expected only in this case, 0.05 is not a magical number of any kind.
-            // Just making sure we don't get big jumps on volatility
+            // Sanity check — volatility should stay stable (< 0.05)
             var volatility = Securities[_aapl].VolatilityModel.Volatility;
             if (volatility <= 0 || volatility > 0.05m)
             {
                 throw new RegressionTestException(
-                    "Expected volatility to stay less than 0.05 (not big jumps due to price discontinuities on splits and dividends), " +
-                    $"but got {volatility}");
+                    $"Expected volatility < 0.05 (no large jumps from corporate actions), but got {volatility}"
+                );
             }
         }
 
         public override void OnEndOfAlgorithm()
         {
             if (_splitsAndDividendsCount == 0)
-            {
                 throw new RegressionTestException("Expected to get at least one split or dividend event");
-            }
 
             if (!_volatilityChecked)
-            {
                 throw new RegressionTestException("Expected to check volatility at least once");
-            }
-        }
-
-        private IIndicator UpdateIndicator(Security security, TradeBar bar)
-        {
-            _indicator.Update(bar);
-
-            return _indicator;
         }
 
         /// <summary>
-        /// This is used by the regression test system to indicate if the open source Lean repository has the required data to run this algorithm.
+        /// Used by the regression testing framework to verify this algorithm’s correctness.
         /// </summary>
-        public bool CanRunLocally { get; } = true;
+        public bool CanRunLocally => true;
 
-        /// <summary>
-        /// This is used by the regression test system to indicate which languages this algorithm is written in.
-        /// </summary>
-        public List<Language> Languages { get; } = new() { Language.CSharp };
+        public List<Language> Languages => new() { Language.CSharp };
 
-        /// <summary>
-        /// Data Points count of all timeslices of algorithm
-        /// </summary>
         public long DataPoints => 2021;
 
-        /// <summary>
-        /// Data Points count of the algorithm history
-        /// </summary>
         public int AlgorithmHistoryDataPoints => 42;
 
-        /// <summary>
-        /// Final status of the algorithm
-        /// </summary>
         public AlgorithmStatus AlgorithmStatus => AlgorithmStatus.Completed;
 
-        /// <summary>
-        /// This is used by the regression test system to indicate what the expected statistics are from running the algorithm
-        /// </summary>
-        public Dictionary<string, string> ExpectedStatistics => new Dictionary<string, string>
+        public Dictionary<string, string> ExpectedStatistics => new()
         {
             {"Total Orders", "0"},
             {"Average Win", "0%"},
